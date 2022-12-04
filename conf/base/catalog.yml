@@ -7,10 +7,18 @@ sample_submission:
   type: pandas.CSVDataSet
   filepath: data/01_raw/sample_submission.csv
   
-df_train:
+train_as_df:
   type: pandas.ParquetDataSet
   filepath: data/02_intermediate/df_train.parquet
   
-df_test:
+test_as_df:
   type: pandas.ParquetDataSet
   filepath: data/02_intermediate/df_test.parquet
+  
+df_train:
+  type: pandas.ParquetDataSet
+  filepath: data/02_intermediate/df_train_n_session.parquet
+  
+df_test:
+  type: pandas.ParquetDataSet
+  filepath: data/02_intermediate/df_test_n_session.parquet
