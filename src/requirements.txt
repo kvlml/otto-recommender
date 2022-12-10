@@ -18,7 +18,7 @@ xgboost==1.6.2
 lightgbm==3.3.3 
 scikit-learn==1.0.2
 seaborn==0.12.1
-matplotlib==3.5.3
+matplotlib==3.4.3
 tqdm==4.64.1 
 pandarallel==1.6.3
 polars==0.15.2
