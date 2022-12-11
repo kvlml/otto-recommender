@@ -5,19 +5,21 @@ import os
 import gc
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+import typing
 import warnings
+
 
 warnings.filterwarnings("ignore")
 
 
-def get_df_name(df):
+def get_df_name(df: pd.DataFrame) -> typing.Optional[str]:
     try:
         return df.name
     except AttributeError:
         return None
 
 
-def plot_user_activity(user, df):
+def plot_user_activity(user: int, df: pd.DataFrame) -> None:
     dict_type_inter_color = dict()
     dict_type_inter_color["clicks"] = "b"
     dict_type_inter_color["carts"] = "orange"
@@ -68,7 +70,7 @@ def plot_user_activity(user, df):
     )
 
 
-def make_date_stats(df):
+def make_date_stats(df: pd.DataFrame) -> pd.DataFrame:
     df['date'] = pd.to_datetime((df["ts"] + 1000 * 60 * 60 * 2) * 1e6)
     df['date_day'] = df['date'].dt.to_period("d")#.astype(str)
     df['n_day'] = df['date'].dt.day.astype('int8')
