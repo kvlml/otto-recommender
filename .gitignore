@@ -1,6 +1,10 @@
 ##########################
 # KEDRO PROJECT
 
+**/*.csv
+**/*.parquet
+**/*.pth
+
 # ignore all local configuration
 conf/local/**
 !conf/local/.gitkeep

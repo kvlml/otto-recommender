@@ -1,6 +1,7 @@
 black~=22.0
 flake8>=3.7.9, <5.0
 ipython>=7.31.1, <8.0
+ipywidgets>=7.0, <8.0
 isort~=5.0
 jupyter~=1.0
 jupyterlab~=3.0
@@ -27,3 +28,7 @@ pyarrow==10.0.1
 merlin-dataloader==0.0.2
 beartype==0.11.0 
 faiss-gpu==1.7.2
+implicit==0.6.2
+recbole==1.1.1
+more_itertools==9.0.0
+pytorch-toolbelt==0.6.2 
