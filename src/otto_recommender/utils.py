@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import polars as pl
 from sklearn.preprocessing import OrdinalEncoder
-from tqdm import tqdm
+from tqdm.notebook import tqdm
 import os
 import gc
 import matplotlib.pyplot as plt
@@ -10,15 +10,103 @@ from typing import Union, List, Tuple, Dict, Iterable, Any, Optional
 from beartype import beartype
 import warnings
 from pandarallel import pandarallel
+from numba import jit, njit, prange
+
+tqdm.pandas()
 
 Int = Union[int, np.int64]
 Float = Union[float, np.float64]
 Session = Union[List[Int], np.ndarray]
 Sessions = List[Session]
 
-pandarallel.initialize(nb_workers=16, progress_bar=True, use_memory_fs=False)
+# pandarallel.initialize(nb_workers=16, progress_bar=True, use_memory_fs=False)
 
 warnings.filterwarnings("ignore")
+
+
+from functools import wraps
+import time
+
+
+def timeit(f):
+    @wraps(f)
+    def wrap(*args, **kw):
+        ts = time.perf_counter()
+        result = f(*args, **kw)
+        te = time.perf_counter()
+        total_time = (te - ts) / 60
+        print('func %r took: %2.4f min' % \
+          (f.__name__, total_time))
+        return result
+    return wrap
+
+
+@jit(nopython=True)
+def mrr(preds, targets, groups):
+    total = 0
+    group_start = 0
+
+    for group_size in groups:
+        ranks = np.argsort(preds[group_start:group_start + group_size])[::-1]
+        for i in range(min(len(ranks), 100)):
+            if targets[group_start + ranks[i]] == 1:
+                total += 1 / (i + 1)
+
+        group_start = group_start + group_size
+
+    return total / len(groups)
+
+
+@njit(parallel=True)
+def pmrr(preds, targets, groups):
+    total = 0
+    group_starts = np.cumsum(groups)
+
+    for group_id in prange(len(groups)):
+        group_end = group_starts[group_id]
+        group_start = group_end - groups[group_id]
+        ranks = np.argsort(preds[group_start: group_end])[::-1]
+        for i in range(min(len(ranks), 100)):
+            if targets[group_start + ranks[i]] == 1:
+                total += 1 / (i + 1)
+
+    return total / len(groups)
+
+
+def lgb_mrr_wrapper(preds, lgb_dataset):
+    metric = pmrr(preds, lgb_dataset.label, lgb_dataset.group)
+    return 'mrr', metric, True
+
+
+@beartype
+def downsample_negative(df: pd.DataFrame, keep: float, target_col: str) -> pd.DataFrame:
+    np.random.seed(33)
+    negatives = np.where((df[target_col] == 0).values)[0]
+    positives = np.where((df[target_col] > 0).values)[0]
+    num_negatives = int(np.ceil(len(negatives) * keep))
+    np.random.shuffle(negatives)
+    new_negatives = negatives[:num_negatives]
+    index = np.concatenate([positives, new_negatives])
+    index.sort()
+    return df.iloc[index]
+
+
+@beartype
+def get_group_for_lgb(sorted_vals: Iterable) -> np.ndarray:
+    curr_val = sorted_vals[0]
+    cnt = 1
+    groups = []
+    for val in sorted_vals[1:]:
+        if val != curr_val:
+            groups.append(cnt)
+            curr_val = val
+            cnt = 1
+        else:
+            cnt += 1
+
+    groups.append(cnt)
+
+    return np.array(groups)
 
 
 @beartype
@@ -31,6 +119,15 @@ def polars_left_merge(df1: pl.DataFrame, df2: pl.DataFrame) -> pl.DataFrame:
 def polars_outer_merge(df1: pl.DataFrame, df2: pl.DataFrame) -> pl.DataFrame:
     common_columns = list(set(df1.columns) & set(df2.columns))
     return df1.join(df2, on=common_columns, how='outer')
+
+
+@beartype
+def cast_to_float32(pl_frame: pl.DataFrame) -> pl.DataFrame:
+    float_columns = [
+        col for col in pl_frame.columns
+        if pl_frame[col].dtype == pl.Float64 or (pl_frame[col].dtype == pl.Int64 and pl_frame[col].null_count() > 0)
+    ]
+    return pl_frame.with_columns([pl.col(col).cast(pl.Float32) for col in float_columns])
 
 
 @beartype
@@ -231,18 +328,47 @@ def flatten_list(l: List):
 
 
 @beartype
-def split_data(df: pd.DataFrame, validation_cut: int, test_users: Union[pl.internals.series.series.Series, List], config: Any):
-    df_val = df[
-        (df[config.col_num_action] <= validation_cut)
-        & (df[config.col_user].isin(test_users))
-    ]
+def split_data(df: pd.DataFrame, validation_cut: int, test_users: Union[pl.internals.series.series.Series, List], config: Any, new_split: bool = False):
+    if not new_split:
+        df_val = df[
+            (df[config.col_num_action] <= validation_cut)
+            & (df[config.col_user].isin(test_users))
+        ]
 
-    df_val_seq = df[
-        (df[config.col_num_action] > validation_cut)
-        & (df[config.col_user].isin(test_users))
-    ]
+        df_val_seq = df[
+            (df[config.col_num_action] > validation_cut)
+            & (df[config.col_user].isin(test_users))
+        ]
 
-    df_train = df.drop(df_val.index)
+        df_train = df.drop(df_val.index)
+    else:
+        df = pl.from_pandas(df)
+
+        df_for_split = df.filter(pl.col(config.col_user).is_in(test_users))
+        df_for_split = df_for_split.join(df_for_split.groupby([config.col_user]).count(), on=[config.col_user])
+
+        df_for_split_less = df_for_split.filter((pl.col('count') <= validation_cut) & (pl.col('count') > 1))
+        df_for_split_more = df_for_split.filter(pl.col('count') > validation_cut)
+
+        test_less = df_for_split_less.filter(pl.col(config.col_num_action) == 1)
+        test_more = df_for_split_more.filter(pl.col(config.col_num_action) <= validation_cut)
+
+        df_val = pl.concat([test_less, test_more])
+
+        df = df.join(df_val, on=[config.col_user, config.col_aid, config.col_ts, config.col_type, config.col_num_action], how='left')
+
+        df_train = df.filter(pl.col('count').is_null())
+        df_train = df_train.drop(columns=['count'])
+
+        df_val = df_val.drop(columns=['count'])
+
+        # val_users = df_val[config.col_user].unique()
+        # df_val_seq = df_train.filter(pl.col(config.col_user).is_in(val_users))
+        df_val_seq = df_train.filter(pl.col(config.col_user).is_in(test_users))
+
+        df_train = df_train.to_pandas()
+        df_val = df_val.to_pandas()
+        df_val_seq = df_val_seq.to_pandas()
     return df_train, df_val, df_val_seq
 
 
@@ -250,9 +376,10 @@ def split_data(df: pd.DataFrame, validation_cut: int, test_users: Union[pl.inter
 def get_train_val_dfs(
     config: Any, 
     count_aid_trs: int = 20, 
-    validation_cut: int = 2,
+    validation_cut: int = 3,
     do_ordinal_encoder_transform: bool = True,
     drop_pad: bool = False,
+    new_split: bool = False
 ):
     PATH_DATA = config.path_data
     df_train = pl.read_parquet(PATH_DATA + 'df_train_n_session.parquet')
@@ -260,11 +387,15 @@ def get_train_val_dfs(
     test_users = df_test[config.col_user].unique()
     df = pl.concat([df_train, df_test])
     df = df.sort(config.col_ts, reverse=True)
-    
-    df = df.to_pandas()
-    df[config.col_num_action] = df.groupby(config.col_user)[config.col_aid].cumcount()
-    df = pl.from_pandas(df)
-    
+
+    # df = df.to_pandas()
+    # df[config.col_num_action] = df.groupby(config.col_user)[config.col_aid].cumcount()
+    # df = pl.from_pandas(df)
+
+    df = df.with_column(pl.col(config.col_ts).
+               rank(method="ordinal", reverse=True).
+               over([config.col_user]).alias(config.col_num_action))
+
     df = df.with_columns(
         [
             pl.col(config.col_num_action)
@@ -282,21 +413,21 @@ def get_train_val_dfs(
     counts_aid = df.groupby([config.col_aid]).count().sort("count", reverse=True)
 
     df = df.to_pandas()
-    X_train, X_val, X_val_seq = split_data(df, validation_cut=validation_cut, test_users=test_users, config=config)
+    X_train, X_val, X_val_seq = split_data(df, validation_cut=validation_cut, test_users=test_users, config=config, new_split=new_split)
     del df
     gc.collect()
 
     counts_aid_filtered = counts_aid.filter(pl.col("count") >= count_aid_trs).to_pandas()
     pad = len(counts_aid_filtered)
-    
+
     ordinal_encoder = OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=pad)
     ordinal_encoder.fit(counts_aid_filtered[config.col_aid].values.reshape(-1, 1))
-    
+
     if do_ordinal_encoder_transform:
         X_train[config.col_aid] = ordinal_encoder.transform(
             X_train[config.col_aid].values.reshape(-1, 1)
         ).astype(int)
-        
+
         X_val_seq[config.col_aid] = ordinal_encoder.transform(
             X_val_seq[config.col_aid].values.reshape(-1, 1)
         ).astype(int)
@@ -325,9 +456,9 @@ def dfs_interactions_to_list(
 ):
     pad = ordinal_encoder.unknown_value
     X_val = X_val.sort(config.col_ts)
-    
+
     X_val_seq = X_val_seq.sort(config.col_ts)
-    
+
     X_val = (
         X_val.groupby([config.col_user])
         .agg(
@@ -348,7 +479,7 @@ def dfs_interactions_to_list(
 
     if truncate_val:
         X_val_seq = X_val_seq.to_pandas()
-        X_val_seq[config.col_train_seq] = X_val_seq[config.col_aid].parallel_apply(
+        X_val_seq[config.col_train_seq] = X_val_seq[config.col_aid].progress_apply(
             lambda x: truncate_list(l=list(x), max_len=config.max_len, from_start=False)
         )
         X_val_seq = pl.from_pandas(X_val_seq)
@@ -374,13 +505,13 @@ def dfs_interactions_to_list(
         )
         if not return_just_splitted:
             X_train = X_train.to_pandas()
-            X_train[config.col_train_seq] = X_train[config.col_aid].parallel_apply(lambda x: x[:-1])
-            X_train[config.col_target] = X_train[config.col_aid].parallel_apply(lambda x: x[-1])
+            X_train[config.col_train_seq] = X_train[config.col_aid].progress_apply(lambda x: x[:-1])
+            X_train[config.col_target] = X_train[config.col_aid].progress_apply(lambda x: x[-1])
             X_train = pl.from_pandas(X_train)
             X_train = X_train.filter(pl.col(config.col_target) != pad)
             if truncate_train:
                 X_train = X_train.to_pandas()
-                X_train[config.col_train_seq] = X_train[config.col_aid].parallel_apply(
+                X_train[config.col_train_seq] = X_train[config.col_aid].progress_apply(
                     lambda x: truncate_list(l=list(x), max_len=config.max_len, from_start=False)
                 )
                 X_train = pl.from_pandas(X_train)

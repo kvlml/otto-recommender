@@ -174,12 +174,6 @@ class CoocurenceRecommender:
                 self._recommend_one_user(user_data)
                 for user_data in tqdm(data, desc='predicting')
             ]
-            return pl.DataFrame({
-                'index': utils.get_sequential_index(recs),
-                'item_id': [item[0] for rec in recs for item in rec],
-                f'cooc_score_{self.item_index}': [item[1] for rec in recs for item in rec],
-                f'cooc_rank_{self.item_index}': [rnk + 1 for rec in recs for rnk, _ in enumerate(rec)],
-            })
         else:
             weights = softmax([np.logspace(0.5, 1, last_k_items, base=last_k_items / 1.5, endpoint=True)])[0]
             recs = [
@@ -187,12 +181,13 @@ class CoocurenceRecommender:
                 for user_data in tqdm(data, desc='predicting')
                 # for user_data in data
             ]
-            return pl.DataFrame({
-                'index': utils.get_sequential_index(recs),
-                'item_id': [item[0] for rec in recs for item in rec],
-                f'cooc_score_{self.item_index}': [item[1] for rec in recs for item in rec],
-                f'cooc_rank_{self.item_index}': [rnk + 1 for rec in recs for rnk, _ in enumerate(rec)],
-            })
+
+        return pl.DataFrame({
+            'index': utils.get_sequential_index(recs),
+            'item_id': [item[0] for rec in recs for item in rec],
+            f'cooc_score_{self.item_index}': [item[1] for rec in recs for item in rec],
+            f'cooc_rank_{self.item_index}': [rnk + 1 for rec in recs for rnk, _ in enumerate(rec)],
+        })
 
     @beartype
     def _recommend_one_user(self, user_data: Session) -> List:

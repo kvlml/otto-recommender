@@ -44,17 +44,19 @@ class AlsRecommender:
         self.implicit_model = implicit_model
 
     @beartype
-    def recommend(self, data: Sessions, n_recs: int = 100) -> pl.DataFrame:
+    def recommend(self, data: Sessions, n_recs: int = 100, chunk_size: int = 100_000) -> pl.DataFrame:
         n_items = self.implicit_model.item_factors.shape[0]
         all_recs = list()
         all_scores = list()
-        bar = tqdm(chunked(data, 100000))
+        total = len(data) // chunk_size if len(data) % chunk_size == 0 else len(data) // chunk_size + 1
+        bar = tqdm(chunked(data, chunk_size), total=total)
         for batch_idx, batch in enumerate(bar):
             recs, scores = self.implicit_model.recommend(
                 range(len(batch)),
                 spm(batch, n_items),
                 N=n_recs,
                 recalculate_user=True,
+                filter_already_liked_items=False,
             )
             all_recs.append(recs)
             all_scores.append(scores)

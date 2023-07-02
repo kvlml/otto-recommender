@@ -1,9 +1,16 @@
 ##########################
 # KEDRO PROJECT
-
+**/*.pickle
+**/*.pkl
 **/*.csv
 **/*.parquet
 **/*.pth
+**/*.lgb
+**/*.json
+**/*.zip
+**/*.dat
+**/*.h5
+.ml-1m
 
 # ignore all local configuration
 conf/local/**
